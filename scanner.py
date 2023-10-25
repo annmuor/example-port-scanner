@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import random
 import socket
+import time
 from typing import Dict, List
 
 
@@ -11,6 +13,10 @@ class ScanTask(object):
     SCAN_TYPE_TCP = 0
     SCAN_TYPE_SYN = 1
     SCAN_TYPE_UDP = 2
+
+    PORT_TYPE_OPEN = 0
+    PORT_TYPE_CLOSED = 1
+    PORT_TYPE_FW = 2
 
     def __init__(self):
         self.scan_type = ScanTask.SCAN_TYPE_TCP
@@ -68,26 +74,72 @@ class ScanTask(object):
         except socket.gaierror:
             raise PortScannerException("target resolution failed")
 
+    def set_timeout_from_string(self, timeout: str):
+        pass
+
     def set_debug(self):
         self.debug = True
 
     def run(self):
-        pass
+        def find_def_status(def_ports: Dict[int, int]) -> int:
+            v = [x for x in ports.values()]
+            na = {
+                ScanTask.PORT_TYPE_CLOSED: v.count(ScanTask.PORT_TYPE_CLOSED),
+                ScanTask.PORT_TYPE_FW: v.count(ScanTask.PORT_TYPE_FW),
+            }
+            return max(na, key=lambda x: na[x])
 
-    def tcp_connect_port_scan(self) -> Dict[int, int]:
-        pass
+        def print_status(port_status: int) -> str:
+            return "open" if port_status == ScanTask.PORT_TYPE_OPEN \
+                else "closed" if port_status == ScanTask.PORT_TYPE_CLOSED \
+                else "firewalled"
 
-    def tcp_syn_port_scan(self) -> Dict[int, int]:
-        pass
+        result = dict()
+        timer_start = time.time()
+        for target in self.targets:
+            if self.probe_icmp:
+                if not self.icmp_probe(target):
+                    print(f"[!] {target} is DOWN according to ICMP probe, skipping")
+                    continue
+                else:
+                    print(f"[+] {target} is UP, ICMP probe succeeded")
+            if self.scan_type == ScanTask.SCAN_TYPE_SYN:
+                result[target] = self.tcp_syn_port_scan(target)
+            elif self.scan_type == ScanTask.SCAN_TYPE_TCP:
+                result[target] = self.tcp_connect_port_scan(target)
+            elif self.scan_type == ScanTask.SCAN_TYPE_UDP:
+                result[target] = self.udp_port_scan(target)
+        elapsed = (time.time() - timer_start)
+        print(f"[+] Scan done, it took {elapsed} seconds to complete the job")
+        for target in result:
+            print(f"\tResults for {target}")
+            ports = result[target]
+            def_state = find_def_status(ports)
+            for port, status in [(x, y) for x, y in ports if y != def_state]:
+                print(f"\t\t{port} is {print_status(status)}")
+            print(f"\t[!!] all other ports is {print_status(def_state)}")
 
-    def udp_port_scan(self) -> Dict[int, int]:
-        pass
+    def tcp_connect_port_scan(self, target: str) -> Dict[int, int]:
+        def random_status() -> int:
+            return random.randint(0, 2)
 
-    def icmp_probe(self) -> bool:
-        pass
+        return dict.fromkeys([(x, random_status()) for x in self.ports])
 
-    def set_timeout_from_string(self, timeout: str):
-        pass
+    def tcp_syn_port_scan(self, target: str) -> Dict[int, int]:
+        def random_status() -> int:
+            return random.randint(0, 2)
+
+        return dict.fromkeys([(x, random_status()) for x in self.ports])
+
+    def udp_port_scan(self, target: str) -> Dict[int, int]:
+        def random_status() -> int:
+            return random.randint(0, 2)
+
+        return dict.fromkeys([(x, random_status()) for x in self.ports])
+
+    def icmp_probe(self, target: str) -> bool:
+        # mock
+        return True
 
 
 if __name__ == '__main__':
