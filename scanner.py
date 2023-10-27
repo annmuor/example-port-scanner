@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import random
+import select
 import socket
 import time
-from typing import Dict, List
+from typing import List, Tuple
 
 
 class PortScannerException(Exception):
@@ -70,7 +71,6 @@ class ScanTask(object):
     def set_targets(self, targets: List[str]):
         try:
             self.targets = [socket.gethostbyname(x) for x in targets][:]
-            print(self.targets)
         except socket.gaierror:
             raise PortScannerException("target resolution failed")
 
@@ -81,8 +81,8 @@ class ScanTask(object):
         self.debug = True
 
     def run(self):
-        def find_def_status(def_ports: Dict[int, int]) -> int:
-            v = [x for x in ports.values()]
+        def find_def_status(def_ports: List[Tuple[int, int]]) -> int:
+            v = [x for _, x in ports]
             na = {
                 ScanTask.PORT_TYPE_CLOSED: v.count(ScanTask.PORT_TYPE_CLOSED),
                 ScanTask.PORT_TYPE_FW: v.count(ScanTask.PORT_TYPE_FW),
@@ -119,23 +119,23 @@ class ScanTask(object):
                 print(f"\t\t{port} is {print_status(status)}")
             print(f"\t[!!] all other ports is {print_status(def_state)}")
 
-    def tcp_connect_port_scan(self, target: str) -> Dict[int, int]:
+    def tcp_connect_port_scan(self, target: str) -> List[Tuple[int, int]]:
         def random_status() -> int:
             return random.randint(0, 2)
 
-        return dict.fromkeys([(x, random_status()) for x in self.ports])
+        return [(x, random_status()) for x in self.ports]
 
-    def tcp_syn_port_scan(self, target: str) -> Dict[int, int]:
+    def tcp_syn_port_scan(self, target: str) -> List[Tuple[int, int]]:
         def random_status() -> int:
             return random.randint(0, 2)
 
-        return dict.fromkeys([(x, random_status()) for x in self.ports])
+        return [(x, random_status()) for x in self.ports]
 
-    def udp_port_scan(self, target: str) -> Dict[int, int]:
+    def udp_port_scan(self, target: str) -> List[Tuple[int, int]]:
         def random_status() -> int:
             return random.randint(0, 2)
 
-        return dict.fromkeys([(x, random_status()) for x in self.ports])
+        return [(x, random_status()) for x in self.ports]
 
     def icmp_probe(self, target: str) -> bool:
         # mock
