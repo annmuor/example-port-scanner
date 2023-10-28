@@ -156,7 +156,15 @@ class ScanTask(object):
         return result
 
     def tcp_syn_port_scan(self, target: str) -> List[Tuple[int, int]]:
-        def ip_header(src, dst):
+
+        def get_my_ip(target: str) -> Tuple[str, str]:
+            test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            test_sock.connect((target, 1))
+            my_ip, _ = test_sock.getsockname()
+            test_sock.close()
+            return my_ip
+
+        def pack_ip_header(src, dst):
             ip_ihl = 5
             ip_ver = 4
             ip_tos = 0
@@ -172,7 +180,12 @@ class ScanTask(object):
             return struct.pack('!BBHHHBBH4s4s', ip_ihl_ver, ip_tos, ip_len, ip_id, ip_frag, ip_ttl, ip_proto, ip_check,
                                ip_saddr, ip_daddr)
 
-        def tcp_header(sport, dport, check=0):
+        def unpack_ip_header(header) -> Tuple[str, str]:
+            ip_ihl_ver, ip_tos, ip_len, ip_id, ip_frag, ip_ttl, ip_proto, ip_check, \
+                ip_saddr, ip_daddr = struct.unpack('!BBHHHBBH4s4s', header)
+            return socket.inet_ntoa(ip_saddr), socket.inet_ntoa(ip_daddr)
+
+        def pack_tcp_header(sport, dport, check=0):
             tcp_seq = 0
             tcp_ack = 0
             tcp_doff = (5 << 4) + 0
@@ -182,10 +195,15 @@ class ScanTask(object):
                                   0)
             return tcp_hdr
 
-        def checksum(src, dst, sport, dport):
+        def unpack_tcp_header(header) -> Tuple[int, int, int]:
+            sport, dport, tcp_seq, tcp_ack, tcp_doff, \
+                tcp_flags, tcp_window, check, urg = struct.unpack('!HHLLBBHHH', header)
+            return (sport, dport, tcp_flags)
+
+        def repack_tcp_header(src, dst, sport, dport):
             src_ip = socket.inet_aton(src)
             dst_ip = socket.inet_aton(dst)
-            tcp_hdr = tcp_header(sport, dport)
+            tcp_hdr = pack_tcp_header(sport, dport)
             hdr = struct.pack("!4s4sBBH", src_ip, dst_ip, 0, socket.IPPROTO_TCP, len(tcp_hdr))
             hdr = hdr + tcp_hdr
             check = 0
@@ -194,27 +212,40 @@ class ScanTask(object):
                 check = check + w
             check = (check >> 16) + (check & 0xffff)
             check = ~check & 0xffff
-            return tcp_header(sport, dport, check)
+            return pack_tcp_header(sport, dport, check)
 
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
-        except Exception as e:
-            print(f"Error: {e}")
-            return []
-        try:
-            x = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            x.connect((target, 1))
-            myhost, _ = x.getsockname()
-        except Exception as e:
-            print(f"Failed to get out host: {e}")
-            return []
-        finally:
-            x.close()
-        for port in self.ports:
-            ip_hdr = ip_header(myhost, target)
-            tcp_hdr = checksum(myhost, target, 65533, port)
-            s.sendto(ip_hdr + tcp_hdr, (target, 0))
-        return []
+        my_ip = get_my_ip(target)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+        sock.setsockopt(socket.SOL_IP, socket.IP_HDRINCL, 1)
+        sock.bind((my_ip, 0))
+        queue = self.ports
+        result = []
+        # now let's setup queue
+        count = 0
+        now = time.time() - 2
+        while len(queue) > 0 and count < 3:
+            r, w, _ = select.select([sock], [], [], 1.0)
+            if sock in r:
+                buf, _ = sock.recvfrom(65565)
+                src, dst = unpack_ip_header(buf[0:20])
+                if dst == my_ip and src == target:
+                    sport, dport, flags = unpack_tcp_header(buf[20:40])
+                    if dport == 65533:  # we use this dport
+                        if flags == 0x12:  # SYN+ACK
+                            result.append((sport, ScanTask.PORT_TYPE_OPEN))
+                        elif flags == 0x14 or flags == 0x04:  # RST+ASK or RST
+                            result.append((sport, ScanTask.PORT_TYPE_CLOSED))
+                        queue.remove(sport)
+            if now + 2 <= time.time():
+                now = time.time()
+
+                for port in queue:
+                    ip_hdr = pack_ip_header(my_ip, target)
+                    tcp_hdr = repack_tcp_header(my_ip, target, 65533, port)
+                    sock.sendto(ip_hdr + tcp_hdr, (target, 0))
+                count += 1
+        result.extend([(x, ScanTask.PORT_TYPE_FW) for x in queue])
+        return result
 
     def udp_port_scan(self, target: str) -> List[Tuple[int, int]]:
         def random_status() -> int:
