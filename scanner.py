@@ -2,6 +2,7 @@
 import random
 import select
 import socket
+import struct
 import time
 from typing import List, Tuple
 
@@ -120,16 +121,100 @@ class ScanTask(object):
             print(f"\t[!!] all other ports is {print_status(def_state)}")
 
     def tcp_connect_port_scan(self, target: str) -> List[Tuple[int, int]]:
-        def random_status() -> int:
-            return random.randint(0, 2)
+        result = []
+        idx = 0
+        while idx < len(self.ports):
+            ports = self.ports[idx:idx + 500]
+            idx += 500
+            socs = []
+            for port in ports:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+                s.setblocking(False)
+                try:
+                    s.connect((target, port))
+                except OSError as e:
+                    if e.errno == 115:
+                        socs.append(s)
+                    else:
+                        raise e
+            while len(socs) > 0:
+                r, w, x = select.select(socs, socs, socs, 1.0)
+                ready = set(r) | set(w) | set(x)
+                for s in ready:
+                    try:
+                        host, port = s.getpeername()
+                        result.append((port, ScanTask.PORT_TYPE_OPEN))
+                    except Exception as e:
+                        pass
+                    finally:
+                        socs.remove(s)
+                        s.close()
+                if len(ready) == 0:
+                    [x.close() for x in socs]
+                    break
 
-        return [(x, random_status()) for x in self.ports]
+        return result
 
     def tcp_syn_port_scan(self, target: str) -> List[Tuple[int, int]]:
-        def random_status() -> int:
-            return random.randint(0, 2)
+        def ip_header(src, dst):
+            ip_ihl = 5
+            ip_ver = 4
+            ip_tos = 0
+            ip_len = 0
+            ip_id = 33
+            ip_frag = 0
+            ip_ttl = 64
+            ip_proto = socket.IPPROTO_TCP
+            ip_check = 0
+            ip_saddr = socket.inet_aton(src)
+            ip_daddr = socket.inet_aton(dst)
+            ip_ihl_ver = (ip_ver << 4) + ip_ihl
+            return struct.pack('!BBHHHBBH4s4s', ip_ihl_ver, ip_tos, ip_len, ip_id, ip_frag, ip_ttl, ip_proto, ip_check,
+                               ip_saddr, ip_daddr)
 
-        return [(x, random_status()) for x in self.ports]
+        def tcp_header(sport, dport, check=0):
+            tcp_seq = 0
+            tcp_ack = 0
+            tcp_doff = (5 << 4) + 0
+            tcp_flags = 0 + (1 << 1) + (0 << 2) + (0 << 3) + (0 << 4) + (0 << 5)
+            tcp_window = 0
+            tcp_hdr = struct.pack('!HHLLBBHHH', sport, dport, tcp_seq, tcp_ack, tcp_doff, tcp_flags, tcp_window, check,
+                                  0)
+            return tcp_hdr
+
+        def checksum(src, dst, sport, dport):
+            src_ip = socket.inet_aton(src)
+            dst_ip = socket.inet_aton(dst)
+            tcp_hdr = tcp_header(sport, dport)
+            hdr = struct.pack("!4s4sBBH", src_ip, dst_ip, 0, socket.IPPROTO_TCP, len(tcp_hdr))
+            hdr = hdr + tcp_hdr
+            check = 0
+            for i in range(0, len(hdr), 2):
+                w = (hdr[i] << 8) + (hdr[i + 1])
+                check = check + w
+            check = (check >> 16) + (check & 0xffff)
+            check = ~check & 0xffff
+            return tcp_header(sport, dport, check)
+
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+        except Exception as e:
+            print(f"Error: {e}")
+            return []
+        try:
+            x = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            x.connect((target, 1))
+            myhost, _ = x.getsockname()
+        except Exception as e:
+            print(f"Failed to get out host: {e}")
+            return []
+        finally:
+            x.close()
+        for port in self.ports:
+            ip_hdr = ip_header(myhost, target)
+            tcp_hdr = checksum(myhost, target, 65533, port)
+            s.sendto(ip_hdr + tcp_hdr, (target, 0))
+        return []
 
     def udp_port_scan(self, target: str) -> List[Tuple[int, int]]:
         def random_status() -> int:
